@@ -1,0 +1,356 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>World of Moo‑craft</title>
+  <style>
+    :root{
+      --bg:#f5f2ea;
+      --ink:#2d2a26;
+      --grass:#b9e2a5;
+      --hud:#1f1b16d0;
+      --accent:#3b7f2e;
+      --danger:#b74a39;
+      --milk:#f8f5f0;
+      --shadow:#00000012;
+    }
+    *{box-sizing:border-box}
+    html,body{height:100%;margin:0;background:var(--bg);font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;color:var(--ink)}
+    .wrap{display:grid;place-items:center;height:100%;padding:12px}
+    canvas{background:linear-gradient(180deg,var(--grass) 0 70%, #9ad18b 100%);width:min(96vw,720px);height:min(70vh,520px);max-height:80vh;border-radius:16px;box-shadow:0 30px 70px var(--shadow), 0 8px 16px var(--shadow);image-rendering:pixelated}
+    header{display:flex;gap:12px;align-items:center;justify-content:space-between;width:min(96vw,720px)}
+    h1{font-size:clamp(18px,3.5vw,28px);margin:0;letter-spacing:.5px}
+    .btn{appearance:none;border:none;background:var(--ink);color:#fff;padding:10px 14px;border-radius:12px;font-weight:700;cursor:pointer;box-shadow:0 6px 14px var(--shadow)}
+    .btn:active{transform:translateY(1px)}
+    .hud{position:absolute;inset:auto 0 0 0;display:flex;justify-content:center;pointer-events:none}
+    .hud .pill{background:var(--hud);color:#fff;border-radius:999px;padding:8px 14px;margin:10px;font-weight:700;display:flex;gap:14px;align-items:center}
+    .pill span{opacity:.9}
+    .mob{display:none}
+    /* On‑screen controls for touch */
+    .touch{position:fixed;inset:auto 0 12px 0;display:grid;grid-template-columns:1fr 1fr;gap:10px;place-items:center}
+    .dpad{display:grid;grid-template:repeat(3,56px)/repeat(3,56px);gap:6px}
+    .dpad button,.act button{width:56px;height:56px;border-radius:16px;border:0;background:#ffffffcc;backdrop-filter:blur(8px);box-shadow:0 6px 16px var(--shadow);font-weight:900}
+    .dpad button:active,.act button:active{transform:translateY(1px)}
+    .act{display:grid;grid-auto-flow:column;gap:10px}
+    @media (max-width:780px){canvas{height:min(56vh,480px)} header{width:100%}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>🐮 World of Moo‑craft</h1>
+      <div style="display:flex;gap:8px">
+        <button id="btnPause" class="btn" aria-label="Pause or resume">Pause</button>
+        <button id="btnRestart" class="btn" aria-label="Restart">Restart</button>
+      </div>
+    </header>
+    <canvas id="game" width="720" height="520" aria-label="Game canvas"></canvas>
+    <div class="hud">
+      <div class="pill">
+        <span>🏆 Score: <b id="score">0</b></span>
+        <span>⏱️ Time: <b id="time">0</b>s</span>
+        <span>❤️ Lives: <b id="lives">3</b></span>
+        <span>🔥 Streak: <b id="streak">0</b></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Touch controls (auto shown on touch devices) -->
+  <div class="touch mob" id="touchCtl" aria-hidden="true">
+    <div class="dpad" aria-label="Direction pad">
+      <div></div><button data-k="ArrowUp">▲</button><div></div>
+      <button data-k="ArrowLeft">◀</button><div></div><button data-k="ArrowRight">▶</button>
+      <div></div><button data-k="ArrowDown">▼</button><div></div>
+    </div>
+    <div class="act">
+      <button class="btn" data-k="Space" style="width:100px">Dash</button>
+      <button class="btn" id="btnHelp">Help</button>
+    </div>
+  </div>
+
+  <script>
+  ;(() => {
+    const cv = document.getElementById('game');
+    const ctx = cv.getContext('2d');
+    const scoreEl = document.getElementById('score');
+    const timeEl = document.getElementById('time');
+    const livesEl = document.getElementById('lives');
+    const streakEl = document.getElementById('streak');
+    const btnPause = document.getElementById('btnPause');
+    const btnRestart = document.getElementById('btnRestart');
+    const btnHelp = document.getElementById('btnHelp');
+    const touchCtl = document.getElementById('touchCtl');
+
+    // Show touch controls if touch device
+    if ('ontouchstart' in window) touchCtl.classList.remove('mob');
+
+    const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+    const rand = (a,b) => a + Math.random()*(b-a);
+
+    const G = {
+      w: cv.width,
+      h: cv.height,
+      t: 0,
+      dt: 0,
+      last: 0,
+      score: 0,
+      lives: 3,
+      paused: false,
+      over: false,
+      streak: 0,
+      difficulty: 1,
+    };
+
+    const input = {up:0,down:0,left:0,right:0,dash:false};
+
+    // Player (Cow) object
+    const player = {
+      x: G.w/2, y: G.h/2, r: 16,
+      speed: 180,
+      dashSpeed: 420,
+      dashCd: 0, // cooldown
+    };
+
+    // Entities
+    const milk = []; // collectibles
+    const foes = []; // enemies (goblins)
+    const particles = [];
+
+    function reset(){
+      G.t = 0; G.last = performance.now(); G.score=0; G.lives=3; G.over=false; G.paused=false; G.streak=0; G.difficulty=1;
+      player.x=G.w/2; player.y=G.h/2; player.dashCd=0;
+      milk.length=0; foes.length=0; particles.length=0;
+      for(let i=0;i<4;i++) spawnMilk();
+      for(let i=0;i<2;i++) spawnFoe();
+      updateHud();
+    }
+
+    function spawnMilk(){
+      milk.push({x:rand(40,G.w-40), y:rand(60,G.h-40), r:10, ttl:120});
+    }
+
+    function spawnFoe(){
+      // Spawn at edges heading inward
+      const edge = Math.floor(rand(0,4));
+      let x,y; if(edge===0){x=rand(0,G.w);y=-20}else if(edge===1){x=G.w+20;y=rand(0,G.h)}
+      else if(edge===2){x=rand(0,G.w);y=G.h+20}else{x=-20;y=rand(0,G.h)}
+      foes.push({x,y, r:14, vx:0, vy:0, speed:rand(70,110)+G.difficulty*10});
+    }
+
+    function addBurst(x,y,color){
+      for(let i=0;i<10;i++) particles.push({x,y,vx:rand(-80,80),vy:rand(-60, -10),g:220,life:rand(.4,.8),age:0,color});
+    }
+
+    function drawCow(p){
+      // Cute cow using simple shapes
+      const {x,y} = p; const r = p.r;
+      ctx.save();
+      ctx.translate(x,y);
+      // body
+      ctx.fillStyle = '#fff';
+      ctx.strokeStyle = '#444';
+      ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.ellipse(0,0,r*1.1,r*1.0,0,0,Math.PI*2); ctx.fill(); ctx.stroke();
+      // head
+      ctx.beginPath(); ctx.ellipse(0,-r*1.2,r*0.95,r*0.8,0,0,Math.PI*2); ctx.fill(); ctx.stroke();
+      // ears
+      ctx.fillStyle = '#b48b7b';
+      ctx.beginPath(); ctx.ellipse(-r*0.9,-r*2, r*0.45, r*0.32, 0, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.ellipse(r*0.9,-r*2, r*0.45, r*0.32, 0, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+      // horns
+      ctx.fillStyle = '#d8b25e';
+      ctx.beginPath(); ctx.arc(-r*0.6,-r*2.2, r*0.25, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+      ctx.beginPath(); ctx.arc(r*0.6,-r*2.2, r*0.25, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+      // muzzle
+      ctx.fillStyle = '#f0c9b4';
+      ctx.beginPath(); ctx.ellipse(0,-r*0.9,r*0.6,r*0.38,0,0,Math.PI*2); ctx.fill(); ctx.stroke();
+      // eyes
+      ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(-r*0.3,-r*1.35,2.5,0,Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(r*0.3,-r*1.35,2.5,0,Math.PI*2); ctx.fill();
+      // legs
+      ctx.fillStyle = '#999';
+      ctx.fillRect(-r*0.8,r*0.9, r*0.35, r*0.5);
+      ctx.fillRect(r*0.45,r*0.9, r*0.35, r*0.5);
+      // cape (heroic) during dash
+      if (player.dashCd>0.6) {
+        ctx.fillStyle = '#7aa36f';
+        ctx.beginPath(); ctx.moveTo(-r*1.1,-r*0.2); ctx.lineTo(-r*2.1,r*0.3); ctx.lineTo(-r*1.1,r*0.8); ctx.closePath(); ctx.fill();
+      }
+      ctx.restore();
+    }
+
+    function drawMilk(m){
+      ctx.save(); ctx.translate(m.x,m.y);
+      ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#888'; ctx.lineWidth=2;
+      // bottle
+      ctx.beginPath(); ctx.moveTo(-6,8); ctx.lineTo(6,8); ctx.lineTo(6,-6); ctx.lineTo(3,-10); ctx.lineTo(-3,-10); ctx.lineTo(-6,-6); ctx.closePath(); ctx.fill(); ctx.stroke();
+      // label
+      ctx.fillStyle = '#cde6ff'; ctx.fillRect(-6,-2,12,6);
+      ctx.restore();
+    }
+
+
+// Load your enemy image (replace filename with your actual uploaded file)
+const foeImg = new Image();
+foeImg.src = "enemy.png"; // <-- put enemy.png in same folder as index.html
+
+function drawFoe(f) {
+  if (!foeImg.complete) return; // don't draw until loaded
+  const size = f.r * 3; // scale image relative to radius
+  ctx.drawImage(foeImg, f.x - size / 2, f.y - size / 2, size, size);
+}
+
+
+    function drawParticles(p){
+      ctx.save(); ctx.globalAlpha = clamp(1 - p.age/p.life, 0, 1);
+      ctx.fillStyle = p.color || '#fff'; ctx.beginPath(); ctx.arc(p.x,p.y,2,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+
+    function collide(a,b){
+      const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy) < (a.r + b.r);
+    }
+
+    function update(dt){
+      if (G.paused || G.over) return;
+      G.t += dt; timeEl.textContent = Math.floor(G.t);
+      player.dashCd = Math.max(0, player.dashCd - dt);
+
+      // Difficulty ramp
+      if (Math.floor(G.t)%10===0) G.difficulty = 1 + Math.floor(G.t/10);
+
+      // Movement
+      let vx = (input.right - input.left);
+      let vy = (input.down - input.up);
+      const speed = (input.dash && player.dashCd===0) ? player.dashSpeed : player.speed + G.difficulty*10;
+      if (input.dash && player.dashCd===0) { player.dashCd = 1.0; addBurst(player.x,player.y,'#cceedd'); }
+      if (vx||vy){ const m = Math.hypot(vx,vy); vx/=m; vy/=m; }
+      player.x = clamp(player.x + vx*speed*dt, 20, G.w-20);
+      player.y = clamp(player.y + vy*speed*dt, 40, G.h-20);
+
+      // Milk blink/ttl
+      for (const m of milk){ m.ttl -= dt; }
+      for (let i=milk.length-1;i>=0;i--){ if (milk[i].ttl<=0){ milk.splice(i,1); spawnMilk(); } }
+
+      // Enemies seek player slightly
+      for (const f of foes){
+        const dx = player.x - f.x; const dy = player.y - f.y; const d = Math.hypot(dx,dy) || 1;
+        f.vx = (dx/d) * f.speed; f.vy = (dy/d) * f.speed; // home in
+        f.x += f.vx * dt; f.y += f.vy * dt;
+      }
+
+      // Collisions
+      for (let i=milk.length-1;i>=0;i--){
+        if (collide(player, {...milk[i], r:12})){
+          addBurst(milk[i].x,milk[i].y,'#ffffff');
+          milk.splice(i,1); spawnMilk();
+          G.score += 10 + 2*G.streak; G.streak = Math.min(G.streak+1, 50);
+          scoreEl.textContent = G.score; streakEl.textContent = G.streak;
+          // Occasionally add a foe
+          if (Math.random()<0.35) spawnFoe();
+        }
+      }
+
+      for (let i=0;i<foes.length;i++){
+        if (collide(player, foes[i])){
+          addBurst(player.x,player.y,'#ffcccc');
+          G.lives--; G.streak=0; livesEl.textContent = G.lives; streakEl.textContent = 0;
+          // knockback
+          player.x = clamp(player.x - Math.sign(foes[i].vx)*20, 20, G.w-20);
+          player.y = clamp(player.y - Math.sign(foes[i].vy)*20, 40, G.h-20);
+          if (G.lives<=0){ G.over=true; saveHi(); }
+        }
+      }
+
+      // Particles
+      for (let i=particles.length-1;i>=0;i--){ const p=particles[i]; p.age+=dt; p.vy += (p.g||300)*dt; p.x+=p.vx*dt; p.y+=p.vy*dt; if(p.age>p.life) particles.splice(i,1); }
+    }
+
+    function draw(){
+      // backdrop sky band already via CSS gradient; add horizon deco
+      ctx.clearRect(0,0,G.w,G.h);
+      // stones
+      for(let i=0;i<6;i++){
+        const x = ((i*127 + Math.floor(G.t*40)) % (G.w+80)) - 40;
+        ctx.fillStyle = '#b7d7aa'; ctx.beginPath(); ctx.ellipse(x, G.h-30, 28, 6, 0, 0, Math.PI*2); ctx.fill();
+      }
+      // Title watermark
+      ctx.globalAlpha = 0.07; ctx.font = '900 80px system-ui'; ctx.textAlign='center'; ctx.fillStyle = '#274a1f';
+      ctx.fillText('MOO‑CRAFT', G.w/2, 120);
+      ctx.globalAlpha = 1;
+
+      // Entities
+      for (const m of milk) drawMilk(m);
+      for (const f of foes) drawFoe(f);
+      drawCow(player);
+      for (const p of particles) drawParticles(p);
+
+      if (G.paused){ overlay('Paused — press P or tap Resume'); }
+      if (G.over){ overlay(`Game Over — Score ${G.score}. Press R to retry`); }
+    }
+
+    function overlay(text){
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(0,0,G.w,G.h);
+      ctx.fillStyle = '#fff'; ctx.font='800 34px system-ui'; ctx.textAlign='center';
+      ctx.fillText('🐮 World of Moo‑craft', G.w/2, G.h/2 - 30);
+      ctx.font='600 18px system-ui'; ctx.fillText(text, G.w/2, G.h/2 + 10);
+      const hi = Number(localStorage.getItem('moo_hi')||0);
+      if (hi>0) ctx.fillText(`Best: ${hi}`, G.w/2, G.h/2 + 40);
+      ctx.restore();
+    }
+
+    function saveHi(){
+      const hi = Number(localStorage.getItem('moo_hi')||0);
+      if (G.score>hi) localStorage.setItem('moo_hi', String(G.score));
+    }
+
+    function updateHud(){
+      scoreEl.textContent=G.score; livesEl.textContent=G.lives; streakEl.textContent=G.streak; timeEl.textContent=Math.floor(G.t);
+    }
+
+    // Game loop
+    function loop(now){
+      const dt = Math.min(0.033, (now - G.last)/1000 || 0); G.last = now; G.dt=dt;
+      update(dt); draw();
+      requestAnimationFrame(loop);
+    }
+
+    // Input
+    const keys = new Set();
+    function setDir(){
+      input.up = +(keys.has('ArrowUp')||keys.has('KeyW'));
+      input.down = +(keys.has('ArrowDown')||keys.has('KeyS'));
+      input.left = +(keys.has('ArrowLeft')||keys.has('KeyA'));
+      input.right = +(keys.has('ArrowRight')||keys.has('KeyD'));
+      input.dash = keys.has('Space');
+    }
+    addEventListener('keydown',e=>{ keys.add(e.code); setDir(); if(e.code==='KeyP') togglePause(); if(e.code==='KeyR') reset(); });
+    addEventListener('keyup',e=>{ keys.delete(e.code); setDir(); });
+
+    // Buttons
+    btnPause.onclick = () => togglePause();
+    btnRestart.onclick = () => reset();
+    btnHelp && (btnHelp.onclick = () => { G.paused=true; draw(); alert('Collect 🍼 milk for points. Avoid the little goblin‑boars.\n\nControls: WASD/Arrows to move, Space to Dash. On mobile, use the on‑screen pad.\nScoring: +10 per milk, bonus increases with streak. Difficulty rises over time.'); });
+
+    function togglePause(){ G.paused=!G.paused; btnPause.textContent = G.paused? 'Resume':'Pause'; }
+
+    // Touch controls mapping
+    touchCtl.addEventListener('pointerdown', ev=>{
+      const t = ev.target; if(!(t instanceof HTMLElement)) return; const k=t.getAttribute('data-k'); if(!k) return;
+      keys.add(k==='Space'?'Space':k); setDir();
+    });
+    touchCtl.addEventListener('pointerup', ev=>{ const t=ev.target; if(!(t instanceof HTMLElement)) return; const k=t.getAttribute('data-k'); if(!k) return; keys.delete(k==='Space'?'Space':k); setDir(); });
+    touchCtl.addEventListener('pointerleave', ev=>{ keys.delete('Space'); ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].forEach(c=>keys.delete(c)); setDir(); });
+
+    reset();
+    requestAnimationFrame(loop);
+  })();
+  </script>
+</body>
+</html>
+
+....
+where to add collision charcter custom image 
+just add my attched image 
